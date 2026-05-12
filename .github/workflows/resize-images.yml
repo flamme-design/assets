@@ -1,0 +1,95 @@
+name: Resize Images
+
+on:
+  push:
+    paths:
+      - '**/originals/**'
+
+jobs:
+  resize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install ImageMagick
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
+      - name: Resize images
+        run: |
+          # Find all originals directories
+          find . -type d -name "originals" | while read originals_dir; do
+            project_dir=$(dirname "$originals_dir")
+            echo "Processing: $project_dir"
+
+            # Process each image in originals
+            find "$originals_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" -o -iname "*.tiff" \) | while read img; do
+              filename=$(basename "$img")
+              # Normalize filename: lowercase, replace spaces with hyphens
+              clean_name=$(echo "$filename" | sed 's/ /-/g' | tr '[:upper:]' '[:lower:]')
+              # Force JPG extension for output
+              base_name="${clean_name%.*}"
+              out_name="${base_name}.jpg"
+
+              echo "  → $filename"
+
+              # --- signature: max 600px wide ---
+              sig_dir="$project_dir/signature"
+              mkdir -p "$sig_dir"
+              if [ ! -f "$sig_dir/$out_name" ]; then
+                convert "$img" -resize "600x>" -quality 80 -strip "$sig_dir/$out_name"
+                echo "    ✓ signature (600px)"
+              fi
+
+              # --- thumbnail: max 400px wide ---
+              thumb_dir="$project_dir/thumbnail"
+              mkdir -p "$thumb_dir"
+              if [ ! -f "$thumb_dir/$out_name" ]; then
+                convert "$img" -resize "400x>" -quality 80 -strip "$thumb_dir/$out_name"
+                echo "    ✓ thumbnail (400px)"
+              fi
+
+              # --- web: max 1400px wide ---
+              web_dir="$project_dir/web"
+              mkdir -p "$web_dir"
+              if [ ! -f "$web_dir/$out_name" ]; then
+                convert "$img" -resize "1400x>" -quality 85 -strip "$web_dir/$out_name"
+                echo "    ✓ web (1400px)"
+              fi
+
+              # --- full: max 1920px wide ---
+              full_dir="$project_dir/full"
+              mkdir -p "$full_dir"
+              if [ ! -f "$full_dir/$out_name" ]; then
+                convert "$img" -resize "1920x>" -quality 85 -strip "$full_dir/$out_name"
+                echo "    ✓ full (1920px)"
+              fi
+
+              # --- og: crop center to 1200x630 ---
+              og_dir="$project_dir/og"
+              mkdir -p "$og_dir"
+              if [ ! -f "$og_dir/$out_name" ]; then
+                convert "$img" -resize "1200x630^" -gravity center -extent 1200x630 -quality 80 -strip "$og_dir/$out_name"
+                echo "    ✓ og (1200x630)"
+              fi
+
+            done
+          done
+
+      - name: Commit resized images
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No new images to commit"
+          else
+            git commit -m "Auto-resize: generate optimized image formats"
+            git push
+          fi
