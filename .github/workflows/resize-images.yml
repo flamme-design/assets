@@ -2,8 +2,7 @@ name: Resize Images
 
 on:
   push:
-    paths:
-      - '**/originals/**'
+    branches: [main]
 
 jobs:
   resize:
@@ -20,19 +19,53 @@ jobs:
       - name: Install ImageMagick
         run: sudo apt-get update && sudo apt-get install -y imagemagick
 
-      - name: Resize images
+      - name: Organize and resize images
         run: |
-          # Find all originals directories
+          # Known generated folders to skip
+          SKIP_DIRS="originals|signature|thumbnail|web|full|og"
+
+          # Function: check if output needs (re)generation
+          needs_update() {
+            local src="$1"
+            local dst="$2"
+            # Generate if output doesn't exist
+            if [ ! -f "$dst" ]; then return 0; fi
+            # Regenerate if original is newer than output
+            if [ "$src" -nt "$dst" ]; then return 0; fi
+            # Skip otherwise
+            return 1
+          }
+
+          # Step 1: Find loose images and move them to originals/
+          echo "=== Step 1: Organizing loose images ==="
+          find . -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" -o -iname "*.tiff" \) | while read img; do
+            dir=$(dirname "$img")
+            base_dir=$(basename "$dir")
+
+            # Skip root level files
+            if [ "$dir" = "." ]; then continue; fi
+            # Skip .github folder
+            if echo "$dir" | grep -q "\.github"; then continue; fi
+            # Skip if already in a generated or originals folder
+            if echo "$base_dir" | grep -qE "^($SKIP_DIRS)$"; then continue; fi
+
+            # This is a loose image in a project folder — move to originals/
+            originals_dir="$dir/originals"
+            mkdir -p "$originals_dir"
+            echo "  Moving: $img → $originals_dir/"
+            mv "$img" "$originals_dir/"
+          done
+
+          # Step 2: Process all originals
+          echo "=== Step 2: Generating resized formats ==="
           find . -type d -name "originals" | while read originals_dir; do
             project_dir=$(dirname "$originals_dir")
             echo "Processing: $project_dir"
 
-            # Process each image in originals
             find "$originals_dir" -type f \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" -o -iname "*.tiff" \) | while read img; do
               filename=$(basename "$img")
               # Normalize filename: lowercase, replace spaces with hyphens
               clean_name=$(echo "$filename" | sed 's/ /-/g' | tr '[:upper:]' '[:lower:]')
-              # Force JPG extension for output
               base_name="${clean_name%.*}"
               out_name="${base_name}.jpg"
 
@@ -41,55 +74,64 @@ jobs:
               # --- signature: max 600px wide ---
               sig_dir="$project_dir/signature"
               mkdir -p "$sig_dir"
-              if [ ! -f "$sig_dir/$out_name" ]; then
+              if needs_update "$img" "$sig_dir/$out_name"; then
                 convert "$img" -resize "600x>" -quality 80 -strip "$sig_dir/$out_name"
                 echo "    ✓ signature (600px)"
+              else
+                echo "    · signature (à jour)"
               fi
 
               # --- thumbnail: max 400px wide ---
               thumb_dir="$project_dir/thumbnail"
               mkdir -p "$thumb_dir"
-              if [ ! -f "$thumb_dir/$out_name" ]; then
+              if needs_update "$img" "$thumb_dir/$out_name"; then
                 convert "$img" -resize "400x>" -quality 80 -strip "$thumb_dir/$out_name"
                 echo "    ✓ thumbnail (400px)"
+              else
+                echo "    · thumbnail (à jour)"
               fi
 
               # --- web: max 1400px wide ---
               web_dir="$project_dir/web"
               mkdir -p "$web_dir"
-              if [ ! -f "$web_dir/$out_name" ]; then
+              if needs_update "$img" "$web_dir/$out_name"; then
                 convert "$img" -resize "1400x>" -quality 85 -strip "$web_dir/$out_name"
                 echo "    ✓ web (1400px)"
+              else
+                echo "    · web (à jour)"
               fi
 
               # --- full: max 1920px wide ---
               full_dir="$project_dir/full"
               mkdir -p "$full_dir"
-              if [ ! -f "$full_dir/$out_name" ]; then
+              if needs_update "$img" "$full_dir/$out_name"; then
                 convert "$img" -resize "1920x>" -quality 85 -strip "$full_dir/$out_name"
                 echo "    ✓ full (1920px)"
+              else
+                echo "    · full (à jour)"
               fi
 
               # --- og: crop center to 1200x630 ---
               og_dir="$project_dir/og"
               mkdir -p "$og_dir"
-              if [ ! -f "$og_dir/$out_name" ]; then
+              if needs_update "$img" "$og_dir/$out_name"; then
                 convert "$img" -resize "1200x630^" -gravity center -extent 1200x630 -quality 80 -strip "$og_dir/$out_name"
                 echo "    ✓ og (1200x630)"
+              else
+                echo "    · og (à jour)"
               fi
 
             done
           done
 
-      - name: Commit resized images
+      - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          # Only commit if there are changes
           if git diff --staged --quiet; then
-            echo "No new images to commit"
+            echo "No changes to commit"
           else
-            git commit -m "Auto-resize: generate optimized image formats"
+            git commit -m "Auto: organize originals + generate resized formats"
             git push
           fi
